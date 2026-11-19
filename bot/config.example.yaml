@@ -1,0 +1,395 @@
+# Solana memecoin PAPER-TRADING bot config. Simulation only: no wallet, no keys, no orders.
+# --- Balance & currency. Simulation runs in USD internally (token prices are USD); everything is SHOWN in EUR.
+starting_balance_eur: 100.0
+display_currency: EUR
+fx_fallback_usd_per_eur: 1.08   # used only if the free FX APIs are unreachable
+fx_cache_hours: 12              # EUR/USD fetched from frankfurter.app / open.er-api.com, cached in data/fx.json
+# The EUR/USD rate is FIXED at the start of the simulation, so P&L reflects trading only (not FX moves).
+position_size_pct: 0.15        # V1 baseline: 15% of equity per trade
+max_open_positions: null       # null = unlimited (exposure governed dynamically by cash & Risk Manager)
+run_minutes: 0                 # 0 = run forever (VPS); --minutes N to override
+poll_seconds: 25               # discovery loop interval
+price_poll_seconds: 2          # open-position price check interval (2s for rapid pump/dump reaction)
+
+# --- Survival mode (amounts in EUR). Only rule: the bot trades until the money runs out, then it is DEAD for good
+# (no open position and cash < min_trade_eur + round-trip network fees). No floor, no daily stop, no cooldown.
+survival:
+  enabled: true
+  min_trade_eur: 3              # smallest trade; sizes below position_size_pct x equity are raised to this
+
+# --- Risk Manager (bot/risk.py), independent from the strategy; the cervello can NEVER change these limits ---
+# mode: survival     = DEFAULT = no position limit, no daily stop, no drawdown stop, no pause after losses;
+#                      the bot only dies when the money is gone. Drawdown is NOTIFIED on Telegram (20/40/60/80 %).
+# mode: conservative = prudent limits below (OFF unless you switch).
+risk:
+  mode: survival               # Survival mode (dynamic exposure via available cash)
+  pause_on_disk_critical: true
+  conservative:
+    max_open_positions: 10
+    max_exposure_pct: 0.75
+    max_position_pct: 0.15
+    max_daily_loss_pct: 0.15
+    max_drawdown_pct: 0.35
+    max_consecutive_losses: 5
+    loss_pause_minutes: 45
+    duplicate_window_s: 120
+    resume_size_factor: 0.5
+    resume_trades: 3
+  survival:
+    drawdown_alert_steps_pct: [20, 40, 60, 80]
+
+# --- Optional trade guards (Phase 3 protections). Data quality is always TRACKED in state.json (quality.*).
+trade_guards:
+  require_jupiter_route: true
+  max_size_to_liquidity: 0.05
+  max_price_impact_pct: 15
+  confirm_price_jump_x: null
+
+# --- Preventive Entry Slippage Hard Guard ---
+# Rejects any buy order at entry if Jupiter quote or liquidity model slippage exceeds this threshold.
+preventive_max_entry_slippage_pct: 7.0
+
+# --- Birdeye (OPTIONAL, OFF by default). Switched on ONLY by env BIRDEYE_ENABLED=1 + BIRDEYE_API_KEY in .env.
+birdeye:
+  enabled: false
+  rpm: 60
+  burst: 1
+  max_wait_s: 1.0
+  timeout_s: 8
+  copy_source: true
+  best_trader_types: ["today", "3D", "1W"]
+  best_trader_pages: 5
+  token_traders: true
+  endpoint_disable_s: 21600
+  global_auth_after: 2
+
+# --- AntiRug Security Engine (bot/antirug.py) ---
+# Active by default to block critical risk tokens, active mint/freeze authorities, and shallow pools.
+antirug:
+  mode: active                  # active = fail-closed hard blocks on critical risk / unverified mandatory checks
+  block_risk_score: 60          # overall risk >= this -> BLOCK
+  weights: {technical: 0.25, liquidity: 0.20, concentration: 0.20, sellability: 0.25, behavioral: 0.10}
+  concentration:
+    limit: 20                   # Birdeye /defi/v3/token/holder page size (max 100)
+    wallet_mode: true           # mode=wallet: economic owners, not token accounts
+    holder_infos: true          # get_holder_infos=true: funding source (linked wallets)
+    top10_high_pct: 25          # top 10 > 25%: warning (risk score)
+    top10_block_pct: 40         # top 10 > 40%: HARD BLOCK (unknown accounts are counted, never assumed technical)
+    top5_high_pct: 25           # top 5 > 25%: high risk
+    single_high_pct: 15
+    uncertain_single_pct: 10    # an unclassified holder this big -> uncertainty flag
+    program_owners: [5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1, GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL]
+    official_wallets: []        # team / treasury / exchange wallets to exclude (add by hand)
+    excluded_known_types: [AMM, LOCKER]   # RugCheck knownAccounts types that are not people
+  liquidity:
+    min_usd: 10000              # usable liquidity < this -> HARD BLOCK (exactly 10000 passes)
+    good_usd: 50000
+    drop_block_1m_pct: 20       # sudden drop -> BLOCK
+    drop_block_5m_pct: 30
+    drop_block_15m_pct: 50
+    inconsistent_ratio: 3.0     # DexScreener vs Birdeye differ more than x3 -> BLOCK (inconsistent data)
+    max_size_to_liquidity_pct: 2.0   # simulated position > 2% of usable liquidity -> BLOCK (pool too shallow)
+    max_buy_impact_pct: 10      # Jupiter buy price impact over this -> BLOCK (pool too shallow)
+    birdeye_history: true
+    max_age_s: 120              # liquidity value older than this (or without timestamp) -> UNKNOWN
+    history_max_age_s: 300      # Birdeye exit-liquidity point older than this is ignored
+  sellability:
+    max_sell_slippage_pct: 10   # quoted sell slippage (quote vs market) over this -> HARD BLOCK
+    max_sell_impact_pct: 10     # Jupiter price impact of the sell quote over this -> BLOCK
+    max_route_hops: 3           # more hops -> 'anomalous route' warning
+    max_quote_age_s: 15         # older quote -> UNKNOWN (stale data never authorises a buy)
+  technical:
+    lp_unlocked_below_pct: 50   # high-risk flag (+30), NOT an automatic block
+    danger_risk_points: 25
+    warn_risk_points: 8
+    token2022_points: 15
+    dangerous_feature_keywords: [mint authority, freeze authority, transfer fee, permanent delegate, transfer hook,
+                                 non-transferable, default account state, close authority]
+  behavioral: {same_funder_min: 2, simultaneous_window_s: 60, simultaneous_min: 3, recent_move_min: 10, max_dev_pct: 5}
+  cache_s: {holders: 120, summary: 600, liquidity_history: 60}
+  rugcheck_rpm: 20
+  shadow_followups_min: [1, 5, 15, 60]
+  rug_like_pct: -50
+  liquidity_loss_pct: -50
+  drained_liq_usd: 1000
+  profitable_missed_pct: 20
+  alerts: {enabled: true, dedupe_s: 21600, sources_down_dedupe_s: 3600}
+
+# --- 'Cervello': learns from closed trades and adapts filters/exits within hard bounds (see bot/cervello.py) ---
+# Dynamic frequency: every 10 trades up to 50 trades, then every 50 trades on a 50-trade window.
+brain:
+  mode: validated
+  enabled: true
+  adapt: true                   # false = only diagnose, never change parameters
+  every_n_trades: 10            # initial interval (up to 50 closed trades)
+  every_n_trades_after_50: 50   # interval once >= 50 closed trades are reached
+  min_trades: 10                # first analysis after this many trades
+  window: 50                    # rolling window of 50 trades to prevent overfitting on noise
+  min_group: 3                  # a pattern needs at least N trades on each side
+  min_gap_pct: 8                # ...and at least this difference in average P&L (percentage points)
+  entry_slippage_limit: true    # ENFORCED - dynamic brain slippage refinement on top of preventive limit
+  observe_trades: 30            # validated only: analysis-only until this many trades
+  min_samples: 30               # validated only
+  oos_frac: 0.3                 # validated only: most recent 30% of the window = out-of-sample check
+  min_t: 2.0                    # validated only: Welch t-statistic needed on the training part
+  eval_trades: 15               # validated only: each change is evaluated on the next 15 trades...
+  rollback_margin_pct: 3.0      # ...and rolled back if the average is worse by more than 3 points
+
+# --- Simulated execution costs (realistic; applied on BOTH buy and sell) ---
+costs:
+  min_slippage_pct: 0.03         # floor 3% per side
+  low_liquidity_usd: 30000       # below this, extra slippage scales up linearly...
+  low_liq_extra_pct: 0.07        # ...to +7% at ~0 liquidity (=> ~10%+ for tiny pools)
+  impact_factor: 1.0             # + size_usd / liquidity_usd (price impact)
+  max_slippage_pct: 0.20         # cap per side
+  fallback_liquidity_usd: 5000   # assumed when API reports none (pump.fun bonding curves)
+  dex_fee_pct:                   # swap fee per side, by DEX id
+    pumpfun: 0.0125
+    pump-fun: 0.0125
+    pumpswap: 0.0030
+    raydium: 0.0025
+    raydium-clmm: 0.0025
+    meteora: 0.0030
+    orca: 0.0030
+    default: 0.0100
+  network_fee_sol_per_tx: 0.002  # base fee + priority fee + Jito tip, per transaction
+  sol_price_usd_fallback: 140    # used only if live SOL price unavailable
+  simulate_failed_exits: true
+  sharp_dump_pct: 0.20           # a price-check tick that drops >=20%...
+  failed_exit_prob: 0.35         # ...makes the sell fail 35% of the time (retry next tick, fee still paid)
+  random_seed: null              # set an int for reproducible runs
+
+# --- Exits & Partial Take Profits (TP1 / TP2) ---
+stop_loss_pct: 0.12            # cut losers fast
+take_profit_pct: 0.60          # TP2 full target: +60% (used when partial_tp is active)
+trailing_stop_pct: 0.10        # after +15%, exit if price falls 10% from peak (0 = off)
+trailing_activate_pct: 0.15
+max_hold_minutes: 15
+
+partial_tp:
+  enabled: true
+  tp1_pct: 0.25                # +25% gain -> sell 50% of position to recover capital & cover fees
+  tp1_sell_fraction: 0.50      # fraction of position closed at TP1
+  move_sl_to_breakeven: true   # after TP1, protect remaining position at entry price (breakeven)
+  tp2_pct: 0.60                # +60% gain -> close remaining position (or trailing stop exits earlier)
+
+# --- Automatic 24-Hour Blacklist (Scam Creators & Failing DEXs) ---
+blacklist:
+  enabled: true
+  duration_hours: 24           # 24-hour automatic quarantine
+  heavy_loss_pct: -45.0        # single trade loss worse than -45% counts as a strike
+  strikes_to_ban_creator: 1    # 1 rug or heavy loss bans the creator immediately for 24h
+  strikes_to_ban_dex: 3        # 3 strikes within strike_window_hours bans the DEX for 24h
+  strike_window_hours: 6
+
+# --- Adaptive Holding & Exit Intelligence (PAPER TRADING ONLY) ---
+adaptive_holding:
+  enabled: true                # Active by default in Paper Trading (ADAPTIVE_HOLDING_ENABLED=0 to disable)
+  initial_minutes: 15
+  evaluation_schedule_minutes: [15, 20, 30, 60, 120, 180]
+  recurring_interval_after_max_minutes: 60
+  remove_hard_time_cap: true
+  step_minutes: 5
+  max_minutes: 30
+  min_sell_slippage_pct: 8.0
+  min_liquidity_usd: 1500
+  min_score: 58
+  require_jupiter_route: true
+  paper_only_check: true
+  baseline_quote_at_initial: true
+  indicators:
+    price_move_pct_weight: 25
+    momentum_weight: 20
+    volume_accel_weight: 20
+    liquidity_weight: 20
+    risk_weight: 15
+
+# --- Exit Slippage Intelligence ---
+exit_slippage:
+  max_exit_slippage_pct: 8.0
+  critical_exit_slippage_pct: 25.0
+  max_price_impact_pct: 10.0
+  max_quote_age_s: 15
+  max_size_to_liquidity_ratio: 0.15
+  max_exit_retries: 4
+  retry_backoff_seconds: 3.0
+  non_liquidatable_recheck_seconds: 30.0
+  partial_exit_enabled: true
+  partial_exit_fractions: [0.50, 0.25]
+  min_partial_exit_usd: 1.0
+  allow_model_fallback_on_api_error: false
+
+# --- Re-entry cooldown (ONLY for volume_spike entries) ---
+reentry_cooldown_minutes: 30
+
+# --- Exits for copy_top_traders entries (separate rules) ---
+copy_exits:
+  follow_wallets: true
+  sold_majority_pct: 0.5
+  reduced_pct: 0.5
+  wallet_check_seconds: 60
+  max_tracked_wallets: 15
+  min_tracked_wallets: 2
+  stop_loss_pct: 0.25
+  take_profit_pct: 1.0
+  trailing_stop_pct: 0.20
+  trailing_activate_pct: 0.30
+  max_hold_minutes: 180
+solana_rpc_url: https://api.mainnet-beta.solana.com
+
+# --- RPC Provider Configuration ---
+rpc:
+  helius:
+    enabled: true
+    rpc_url: ""
+    ws_url: ""
+  chainstack:
+    enabled: true
+    rpc_url: ""
+    ws_url: ""
+  public_fallback:
+    enabled: true
+    rpc_url: ""
+    enable_custom: false
+
+# --- Execution prices from Jupiter's free QUOTE API (read-only) ---
+# Maximum aggregate time the main trading loop may wait on external APIs per pass.
+api_cycle_budget_seconds: 12.0
+
+jupiter:
+  enabled: true
+  request_deadline_seconds: 2.5
+  endpoints:
+    - https://api.jup.ag/swap/v2/order
+    - https://api.jup.ag/swap/v1/quote
+  slippage_bps: 5000
+  cache_seconds: 10
+  exec_extra_pct: 0.0
+  max_negative_slip_pct: 0.10
+  max_quote_age_s: 15
+
+# --- GMGN Discovery (free public channels only) ---
+gmgn:
+  enabled: true
+  public_channels:
+    - new_pool_info
+    - new_pair_update
+    - new_launched_info
+    - chain_stat
+  max_events: 200
+
+# --- Pump.fun Discovery (free public channels only) ---
+pumpfun:
+  enabled: true
+  max_events: 200
+
+# --- Discovery / volume-spike entry ---
+new_pool_pages: 1
+max_pair_age_minutes: 60
+spike_multiplier: 8
+min_baseline_5m_usd: 400
+min_volume_5m_usd: 3000
+gt_trades_per_discovery_pass: 5
+min_buys_5m: 15
+min_buy_sell_ratio: 1.2
+min_liquidity_usd: 10000
+
+# --- Data integrity of prices ---
+price_integrity:
+  enabled: true
+  reject_entry_on_quote_mismatch: true
+  use_jupiter_exit_when_mid_implausible: true
+  max_tick_jump_x: 20
+  confirm_tolerance_x: 3
+allowed_quote_symbols: [SOL, WSOL, USDC]
+
+# --- Holder filters ---
+max_dev_holding_pct: 3.0
+max_top10_pct: 20.0
+max_rugcheck_score_normalised: 60
+require_whale_buy: true
+whale_buy_usd: 300
+whale_lookback_minutes: 10
+
+# --- Vybe budget ---
+vybe_monthly_credits: 25000
+vybe_monthly_use_pct: 0.9
+vybe_daily_credit_cap: 750
+vybe_credit_costs: {top_holders: 80, top_traders: 80}
+vybe_confirm_holders: false
+
+# --- Copy top traders entry (Multi-Timeframe Weighted Intersection: 1d / 3d / 7d) ---
+copy_traders_enabled: true
+min_top_traders_in: 5
+top_traders_resolution: 7d
+top_traders_resolutions: ["1d", "3d", "7d"]
+top_traders_min_timeframes: 2
+top_traders_limit: 1000
+top_traders_refresh_minutes: 720
+
+# --- VPS edition ---
+close_positions_on_stop: false
+daily_summary_hour: 8
+timezone: Europe/Rome
+telegram_enabled: true
+telegram:
+  hourly_screenshot: true
+  screenshot_interval_minutes: 60
+  screenshot_first_delay_s: 120
+watchdog_seconds: 240
+http_total_timeout_s: 20
+http_connect_timeout_s: 5
+http_read_timeout_s: 10
+http_retries: 1
+http_breaker_after: 5
+state_save_seconds: 15
+shutdown_timeout_s: 25
+shutdown_flush_s: 12
+
+# --- Adaptive Polling for Open Positions ---
+adaptive_poll:
+  enabled: true
+  base_interval_seconds: 2          # matches price_poll_seconds (2s)
+  accelerated_interval_seconds: 1   # when position near SL/TP/trailing or rapid price move
+  emergency_interval_seconds: 0.5   # SMART Recovery & Anti-Panic crash verification
+  triggers:
+    near_exit_pct: 0.02
+    tick_move_pct: 0.05
+    liquidity_drop_1m_pct: 20
+  cooldown_seconds: 300
+  max_accelerated_positions: 15
+
+# --- SMART Recovery & Anti-Panic Sell Mode (>70% Crash Protection) ---
+recovery_mode:
+  enabled: true
+  crash_threshold_pct: 0.70         # -70% drop triggers recovery / anti-panic verification
+  min_liquidity_usd: 1000           # below this = pool evaporated -> cut loss / mark non-liquidatable
+  verification_timeout_s: 30
+  max_verification_retries: 3
+  require_jupiter_route: true
+  anti_panic_enabled: true          # hold through >70% flash crash if pool liquidity is still intact
+  anti_panic_hold_seconds: 300      # wait up to 5m candle reaction for technical rebound
+  anti_panic_bounce_pct: 0.25       # +25% rebound from crash low exits anti-panic hold
+  anti_panic_max_extra_drop_pct: 0.20  # cut immediately if price falls another 20% below crash point
+
+# --- Ops: alerts, disk, backups ---
+health:
+  api_alert_after_s: 300
+  persistent_errors_n: 5
+  disk_check_seconds: 300
+  disk_warn_mb: 300
+  disk_critical_mb: 100
+  dashboard_check_seconds: 120
+  dashboard_alert_after_s: 300
+backup:
+  enabled: true
+  interval_minutes: 60
+  keep: 48
+  min_free_mb: 200
+  notify: daily
+
+disk_guard:
+  threshold_pct: 80
+  check_minutes: 10
+  alert_cooldown_hours: 6
+  keep_backups: 3
