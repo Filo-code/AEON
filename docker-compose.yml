@@ -1,0 +1,115 @@
+# Paper-trading bot (SOLO simulazione) + dashboard.
+#   Avvio base (dashboard solo su 127.0.0.1 -> usa tunnel SSH):  docker compose up -d --build
+#   Con dominio + HTTPS automatico (Caddy):                     docker compose --profile https up -d --build
+#   Con Cloudflare Tunnel (nessuna porta aperta):               docker compose --profile tunnel up -d --build
+#   Riavvio automatico dei container 'unhealthy' (opzionale):   aggiungi --profile autoheal
+services:
+  bot:
+    build: .
+    image: aeon-by-rekt:v2
+    container_name: paper-bot
+    init: true                       # tini come PID 1: segnali inoltrati, niente zombie
+    command: ["python", "bot/paper_bot.py"]
+    env_file: .env
+    environment:
+      - DATA_DIR=/app/data
+      - DASHBOARD_HEALTH_URL=http://dashboard:8080/healthz
+      - DASHBOARD_SCREENSHOT_URL=http://dashboard:8080   # screenshot orario: il bot apre la dashboard nella rete interna
+    volumes:
+      - ./data:/app/data
+      - ./bot/config.yaml:/app/bot/config.yaml:ro
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 40s           # il bot salva e chiude in <= 25 s (shutdown_timeout_s)
+    healthcheck:
+      test: ["CMD", "python", "/app/deploy/healthcheck.py"]
+      interval: 60s
+      timeout: 40s
+      retries: 3
+      start_period: 120s
+    labels:
+      - autoheal=true
+    mem_limit: 1g                    # include Chromium headless per pochi secondi ogni ora (screenshot)
+    shm_size: 256m
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  dashboard:
+    build: .
+    image: aeon-by-rekt:v2
+    container_name: paper-dashboard
+    init: true
+    command: ["waitress-serve", "--host=0.0.0.0", "--port=8080", "--threads=4", "--call", "dashboard.app:create_app"]
+    env_file: .env
+    environment:
+      - PORT=8080
+      - DATA_DIR=/app/data
+    volumes:
+      - ./data:/app/data:ro
+    ports:
+      # SICUREZZA: di default SOLO 127.0.0.1 (password in chiaro su HTTP non va esposta su internet).
+      # Usa il profilo https (Caddy) o tunnel (Cloudflare). DASHBOARD_BIND=0.0.0.0 solo se sai cosa fai.
+      - "${DASHBOARD_BIND:-127.0.0.1}:${PORT:-8080}:8080"
+    restart: unless-stopped
+    depends_on: [bot]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    labels:
+      - autoheal=true
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # --- Opzione HTTPS automatico con un tuo dominio (porte 80 e 443 aperte) ---
+  caddy:
+    image: caddy:2.8.4
+    container_name: paper-caddy
+    profiles: ["https"]
+    env_file: .env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [dashboard]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # --- Opzione Cloudflare Tunnel (nessuna porta aperta sulla VPS) ---
+  cloudflared:
+    image: cloudflare/cloudflared:2024.12.2
+    container_name: paper-tunnel
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on: [dashboard]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  # --- Opzionale: riavvia i container che restano 'unhealthy' (Docker da solo NON lo fa) ---
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    container_name: paper-autoheal
+    profiles: ["autoheal"]
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

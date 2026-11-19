@@ -1,0 +1,45 @@
+{
+  "name": "AEON by Rekt",
+  "short_name": "AEON by Rekt",
+  "description": "AEON by Rekt - Paper Trading Intelligence Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/static/logo/aeon-logo-32x32.png",
+      "sizes": "32x32",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/logo/aeon-logo-48x48.png",
+      "sizes": "48x48",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/logo/aeon-logo-64x64.png",
+      "sizes": "64x64",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/logo/aeon-logo-128x128.png",
+      "sizes": "128x128",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/logo/aeon-logo-256x256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["finance", "productivity"],
+  "lang": "it",
+  "dir": "ltr"
+}

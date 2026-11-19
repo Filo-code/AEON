@@ -1,0 +1,34 @@
+# AEON by Rekt - systemd service template for dashboard
+# This file is a template; install.sh/install_vps.sh will copy and replace variables.
+[Unit]
+Description=AEON by Rekt Dashboard Service (read-only)
+After=network-online.target aeon-bot.service paper-bot.service
+Wants=network-online.target aeon-bot.service paper-bot.service
+Documentation=man:paper-dashboard(8) https://github.com/aeon-by-rekt/docs
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+Group=${SERVICE_GROUP}
+WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
+Environment=DATA_DIR=${DATA_DIR}
+Environment=PYTHONUNBUFFERED=1
+# Dashboard binds ONLY to localhost for security
+ExecStart=${INSTALL_DIR}/.venv/bin/waitress-serve --host=127.0.0.1 --port=${PORT:-8080} --threads=4 --call dashboard.app:create_app
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+MemoryHigh=128M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

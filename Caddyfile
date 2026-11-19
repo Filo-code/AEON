@@ -1,0 +1,13 @@
+# HTTPS automatico (Let's Encrypt) per la dashboard. Usato solo con: docker compose --profile https up -d
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy dashboard:8080
+}
